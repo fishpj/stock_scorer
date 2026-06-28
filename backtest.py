@@ -38,7 +38,9 @@ def parse_args():
     p.add_argument("--days", type=int, default=30, help="回测交易日数")
     p.add_argument("--top", type=int, default=5, help="每日取前 N 只")
     p.add_argument("--hold", type=int, default=5, help="前瞻持有天数")
-    p.add_argument("--universe", type=int, default=50, help="universe 规模（top N 当前活跃股）")
+    p.add_argument("--universe", type=int, default=50, help="每日 universe 规模（as-of-d 重排后取 top N）")
+    p.add_argument("--super-universe", type=int, default=200,
+                   help="super-universe 规模（当前活跃股池，as-of-d 从中重排）")
     p.add_argument("--regime", choices=["auto", "neutral", "bull", "bear"], default="auto")
     p.add_argument("--offset", type=int, default=0,
                    help="起点偏移：把回测窗口整体向前推 N 个交易日（用于稳定性测试）")
@@ -65,6 +67,47 @@ def kline_as_of(kline: pd.DataFrame, date) -> pd.DataFrame:
         return pd.DataFrame()
     k["日期"] = pd.to_datetime(k["日期"], errors="coerce")
     return k[k["日期"] <= pd.Timestamp(date)].reset_index(drop=True)
+
+
+def universe_as_of(d, klines: dict, codes_names: list, n: int) -> list:
+    """从 super-universe 中按 as-of-d 活跃度重排，取 top n。
+
+    消除 lookahead bias：原版用今日 spot 反推历史，早期窗口 n=3。
+    现按 d 当日的 20 日均成交额 × log(换手率+1) 重排，并做 as-of-d 硬过滤
+    （上市 ≥ 60 日、流通市值区间）。
+    """
+    import numpy as np
+    rows = []
+    for code, name in codes_names:
+        k = klines.get(code)
+        if k is None or k.empty:
+            continue
+        k_ao = kline_as_of(k, d)
+        if k_ao is None or k_ao.empty or len(k_ao) < 60:
+            continue  # 上市不足 60 日
+        amt = pd.to_numeric(k_ao["成交额"], errors="coerce").tail(20).mean()
+        if pd.isna(amt) or amt <= 0:
+            continue
+        # 流通市值 as-of-d 过滤（sina 源有流通股本，em 源可能无）
+        share = pd.to_numeric(k_ao.iloc[-1].get("流通股本"), errors="coerce")
+        close = pd.to_numeric(k_ao.iloc[-1].get("收盘"), errors="coerce")
+        if pd.notna(share) and pd.notna(close):
+            circ_yi = share * close / 1e8
+            if not (config.HARD_FILTERS["circ_min_billion"] <= circ_yi <= config.HARD_FILTERS["circ_max_billion"]):
+                continue
+        # 换手率（近 5 日均）
+        turn = None
+        if "换手率" in k_ao.columns:
+            turn = pd.to_numeric(k_ao["换手率"], errors="coerce").tail(5).mean()
+            if pd.notna(turn) and turn < 1:  # sina 小数 → 百分数
+                turn = turn * 100
+        if pd.notna(turn) and turn > 0:
+            activity = amt * np.log1p(turn)
+        else:
+            activity = amt  # fallback 纯成交额
+        rows.append((code, name, activity))
+    rows.sort(key=lambda x: x[2], reverse=True)
+    return [(r[0], r[1]) for r in rows[:n]]
 
 
 def spot_row_from_kline(code: str, kline_as_of: pd.DataFrame, name: str = "") -> pd.Series:
@@ -210,18 +253,18 @@ def aggregate(picks: pd.DataFrame, col: str, bucket_fn) -> pd.DataFrame:
 def main():
     args = parse_args()
 
-    step(f"构造 universe（top {args.universe} 当前活跃股）…")
-    uni, spot_full = build_universe(args.universe)
-    print(f"  universe {len(uni)} 只")
+    step(f"构造 super-universe（top {args.super_universe} 当前活跃股）…")
+    uni, spot_full = build_universe(args.super_universe)
+    print(f"  super-universe {len(uni)} 只")
 
-    step("拉 universe 全部 K 线与财务（一次性缓存）…")
+    step("拉 super-universe 全部 K 线与财务（一次性缓存）…")
     codes_names = list(zip(uni["代码"].astype(str).str.zfill(6), uni["名称"].astype(str)))
     klines = {}
     funds = {}
     for i, (code, name) in enumerate(codes_names):
         klines[code] = data.get_daily_kline(code, days=200)
         funds[code] = data.get_fundamentals(code)
-        if (i + 1) % 10 == 0:
+        if (i + 1) % 20 == 0:
             print(f"  已抓 {i+1}/{len(codes_names)}")
     print(f"  K 线 {sum(1 for v in klines.values() if v is not None and not v.empty)}/{len(codes_names)}")
 
@@ -278,6 +321,7 @@ def main():
 
     picks = []
     regime_counter = {}
+    universe_sizes = []
     for di, d in enumerate(test_dates):
         if use_daily_regime:
             regime = detect_regime_as_of(klines, d)
@@ -285,9 +329,13 @@ def main():
             regime = regime_arg
         regime_counter[regime] = regime_counter.get(regime, 0) + 1
 
+        # as-of-d universe 重建：从 super-universe 中按当日活跃度取 top n
+        codes_names_today = universe_as_of(d, klines, codes_names, args.universe)
+        universe_sizes.append(len(codes_names_today))
+
         signals_list = []
         lhb_codes, lhb_inst_codes, lhb_inst_amount = lhb_sets_as_of(d)
-        for code, name in codes_names:
+        for code, name in codes_names_today:
             s = score_as_of(code, name, klines.get(code), funds.get(code, {}), d,
                             lhb_codes=lhb_codes, lhb_inst_codes=lhb_inst_codes,
                             lhb_inst_amount=lhb_inst_amount)
@@ -316,6 +364,7 @@ def main():
             print(f"  [{di+1}/{len(test_dates)}] {d} | regime={regime} | picks {len(picks)} | 平均5日 {avg5:.2f}%")
 
     print(f"\n  市场环境分布：{regime_counter}")
+    print(f"  universe 大小：min {min(universe_sizes)} / 中位 {sorted(universe_sizes)[len(universe_sizes)//2]} / max {max(universe_sizes)}（目标 {args.universe}）")
 
     picks_df = pd.DataFrame(picks)
     if picks_df.empty:
