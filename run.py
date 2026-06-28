@@ -209,7 +209,7 @@ def main():
     out_path = Path(__file__).parent / args.out
     with pd.ExcelWriter(out_path, engine="openpyxl") as w:
         # 主表
-        cols = ["代码", "名称", "总分", "涨跌幅", "市场环境", "建议",
+        cols = ["代码", "名称", "最新价", "涨跌幅", "总分", "市场环境", "建议",
                 "Z1_业绩向好性", "Z2_同质同价", "Z3_形态",
                 "Z4_市场关注度", "Z5_最大可卖量", "Z6_特定情境记忆",
                 "K_盈亏比", "G_量比", "机构净买入_亿", "PE", "流通市值_亿",
@@ -237,7 +237,7 @@ def main():
     print(f"  ≥ 门槛 {config.SCORE_THRESHOLD} 分共 "
           f"{(df['总分'] >= config.SCORE_THRESHOLD).sum()} 只")
     print("\nTop 10：")
-    show = df.head(10)[["代码", "名称", "总分", "建议"]]
+    show = df.head(10)[["代码", "名称", "最新价", "总分", "建议"]]
     print(show.to_string(index=False))
     return 0
 
