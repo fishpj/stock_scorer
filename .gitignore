@@ -8,6 +8,8 @@ cache/
 temp/
 v11_results/
 v12_results/
+v13_results/
+v14_equal/
 *.xlsx
 *.log
 

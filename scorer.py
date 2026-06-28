@@ -103,9 +103,11 @@ def _regime_adjust_z3(z3_raw: int, note: str, regime: str) -> int:
 
 def score_all(signals_list: List[Dict], regime: str) -> pd.DataFrame:
     """对每个候选按权重打分，输出 DataFrame（已按总分降序）。"""
-    weights = dict(config.SCORE_WEIGHTS[regime])
+    if config.USE_EQUAL_WEIGHTS:
+        weights = {label: 1.0 / len(Z_LABELS) for label in Z_LABELS}
+    else:
+        weights = dict(config.SCORE_WEIGHTS[regime])
     leap = leap_boost(signals_list)
-
     # 跃迁加权：从其它依据中按比例收回
     for k in leap:
         weights[k] = weights.get(k, 0) + leap[k]
