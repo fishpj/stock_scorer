@@ -1,0 +1,27 @@
+# 数据缓存与生成产物
+cache/
+temp/
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 系统/编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 凭据
+.env
+*.key
+secrets.json
