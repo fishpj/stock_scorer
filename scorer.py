@@ -140,12 +140,15 @@ def score_all(signals_list: List[Dict], regime: str) -> pd.DataFrame:
         tiebreak = 0.0
         if pd.notna(g_ratio) and isinstance(g_ratio, (int, float)):
             tiebreak += min(max(g_ratio, 0), 3.0) * 0.01
-        # 2) 机构净买入金额（cap 10亿 → +0~0.03）—— 移除 Z4 加分后，
-        #    回测显示机构净买入 picks 5日胜率 75.8%（高于无机构 60.1%），
-        #    重新作为正向 tiebreaker
-        inst_amt_yi = s.get("机构净买入_亿")
-        if pd.notna(inst_amt_yi) and isinstance(inst_amt_yi, (int, float)):
-            tiebreak += min(max(inst_amt_yi, 0), 10.0) / 10.0 * 0.03
+        # 2) 机构净买入金额 tiebreaker（受 config.TIEBREAKER_INST_ENABLED 开关控制）
+        #    V1.2 A/B 实测（5 窗口）：保留 tiebreaker 整体 5 日 67.8% / 7.57%，
+        #    移除降到 66.4% / 7.32%。tiebreaker 把 G 量比单独推上的差 picks
+        #    （B 独有 42.9% / -0.02%）替换为机构净买入 picks（A 独有 63.3% / 3.66%）。
+        #    机构净买入桶整体平均低是右侧尾薄所致，非 tiebreaker 反向。默认开。
+        if config.TIEBREAKER_INST_ENABLED:
+            inst_amt_yi = s.get("机构净买入_亿")
+            if pd.notna(inst_amt_yi) and isinstance(inst_amt_yi, (int, float)):
+                tiebreak += min(max(inst_amt_yi, 0), 10.0) / 10.0 * 0.03
 
         row = dict(s)
         row["Z3_形态"] = z3  # 用调整后的值

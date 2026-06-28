@@ -58,6 +58,15 @@ SCORE_WEIGHTS = {
 # 当某依据强度突变时，权重临时 +N%
 WEIGHT_LEAP_BOOST = 0.10
 
+# Tiebreaker 开关（A/B 验证用）
+# V1.2 A/B 实测（5 窗口 × top5 = 350 picks）：
+#   保留 tiebreaker（A）：整体 5 日 67.8% / 7.57%，A 独有 picks 63.3% / 3.66%
+#   移除 tiebreaker（B）：整体 5 日 66.4% / 7.32%，B 独有 picks 42.9% / -0.02%
+#   picks 重叠 94.3%——tiebreaker 把 G 量比单独推上的差 picks 替换为机构净买入
+#   picks，后者表现更好。保留。
+# 注：机构净买入桶整体平均 5.29% < 无机构 8.12%，是右侧尾薄所致，非 tiebreaker 反向。
+TIEBREAKER_INST_ENABLED = True
+
 # 候选门槛与持仓数
 # 桶验证（6 个 offset 窗口合并）：5.5-6.0 区间 5 日胜率 73.1% / 平均 10.14%，
 # 显著优于 5.0-5.5（55.5% / 4.11%）与 6.5-7.0（59.3% / 5.92%）。
