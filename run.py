@@ -1,3 +1,7 @@
+# 修改记录
+# 修改内容: CLI 入口，编排抓数→过滤→打分→输出 ranked_candidates.xlsx 全流程
+# 修改日期: 2026-06-28
+# 作者: fishpj
 """CLI 入口：编排全部流程，输出 ranked_candidates.xlsx。
 
 用法：

@@ -1,3 +1,7 @@
+# 修改记录
+# 修改内容: Streamlit 看板，可视化 ranked_candidates.xlsx；适配 pandas 3.0（applymap→map），流通市值上限放宽到 5000 亿
+# 修改日期: 2026-06-28
+# 作者: fishpj
 """Streamlit Web 看板：可视化 ranked_candidates.xlsx。
 
 启动：

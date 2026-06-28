@@ -1,3 +1,7 @@
+# 修改记录
+# 修改内容: Python 依赖清单（akshare/pandas/openpyxl；运行看板另需 streamlit/plotly/matplotlib）
+# 修改日期: 2026-06-28
+# 作者: fishpj
 akshare>=1.12.0
 pandas>=2.0.0
 openpyxl>=3.1.0
