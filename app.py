@@ -83,11 +83,13 @@ def main():
 
     df = rank.copy()
     # V3 标记：K 甜点 / 警告
+    # 甜点区间 [0.5,1.5] 对齐 scorer.py；K 计算强制 down≥0.001，<0.3 无样本，
+    # 警告区间用 <0.4（0.2-0.4 桶 5 日胜率 42.1% 最差）
     if "K_盈亏比" in df.columns:
         def _k_tag(k):
             if pd.isna(k): return ""
-            if k < 0.3: return "⚠超涨警告"
             if 0.5 <= k <= 1.5: return "✓甜点"
+            if k < 0.4: return "⚠低盈亏比"
             return ""
         df["K状态"] = df["K_盈亏比"].apply(_k_tag)
     df = df[df["总分"] >= score_min]

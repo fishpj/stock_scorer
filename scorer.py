@@ -125,7 +125,12 @@ def score_all(signals_list: List[Dict], regime: str) -> pd.DataFrame:
         sub = [z1, z2, z3, z4, z5, z6]
         total = sum(sub[i] * weights[Z_LABELS[i]] for i in range(6)) * 5  # 0~10
 
-        # K 甜点奖励：[0.5, 1.5] +0.5；<0.3 扣 1（超涨末端风险）
+        # K 甜点奖励 + 超涨末端惩罚
+        # 桶验证（V1.1 5 窗口）：0.8-1.0 70.3% / 1.0-1.2 71.2% / 1.2-1.5 90.4% 是最优子区间，
+        # 0.5-0.8 仅 57-59% 较差。但 A/B 验证（V1.3）显示收窄到 [0.8,1.5] 反而整体降
+        # 2.6pp——甜点宽是为了保护排序，把 0.5-0.8 次优股推到 top-K 替代更差的 K<0.4 股票。
+        # 桶级相关 ≠ 因果，保留 [0.5,1.5]。<0.3 扣 1 在 picks 里 n=0 是因惩罚已生效把
+        # 这些股推出 top-5，并非死代码，保留。
         k_ratio = s.get("K_盈亏比")
         if pd.notna(k_ratio) and isinstance(k_ratio, (int, float)):
             if 0.5 <= k_ratio <= 1.5:
