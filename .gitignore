@@ -6,7 +6,9 @@
 # 数据缓存与生成产物
 cache/
 temp/
+v11_results/
 *.xlsx
+*.log
 
 # Python
 __pycache__/

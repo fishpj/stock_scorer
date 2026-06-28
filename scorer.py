@@ -62,7 +62,9 @@ def _regime_adjust_z3(z3_raw: int, note: str, regime: str) -> int:
     """根据 Z3_note（含趋势/偏离）按市场环境重打分。
 
     note 形如："趋势 走强, 偏离 超涨, 20日 89.1%"
-    - bull：走强+超涨=2（顺势），走强=1，其它=0
+    桶验证显示 bull 下超涨样本占 70% 但 5 日仅 6.73%，原规则
+    "走强+超涨=2" 把分堆到追涨顶端。收紧为：
+    - bull：走强且非超涨=2，走强+超涨=1，超涨单独=0
     - bear：超跌=2（反转），走弱=1（筑底），走强=0，超涨=-1
     - neutral：走强=1，超跌=1，超涨=0，其它=0
     """
@@ -74,9 +76,11 @@ def _regime_adjust_z3(z3_raw: int, note: str, regime: str) -> int:
             break
 
     if regime == "bull":
-        if trend == "走强" and dev == "超涨":
+        if trend == "走强" and dev != "超涨":
             return 2
-        if trend == "走强":
+        if trend == "走强" and dev == "超涨":
+            return 1
+        if dev == "超跌":
             return 1
         return 0
     if regime == "bear":
@@ -160,12 +164,13 @@ def score_all(signals_list: List[Dict], regime: str) -> pd.DataFrame:
 
 
 def _advice(total: float, s: Dict) -> str:
+    # 桶验证显示 5.5-6.0 系统性最优，门槛 5.5；≥6.5 反而追涨风险，标注警惕
     if total >= config.SCORE_THRESHOLD and s.get("timing_ok"):
-        return "可建仓（择时已满足）"
+        tag = "（高分警惕追涨）" if total >= 6.5 else ""
+        return f"可建仓（择时已满足）{tag}".strip()
     if total >= config.SCORE_THRESHOLD:
-        return "进入候选（等待择时）"
-    if total >= 5.5:
-        return "观察池"
+        tag = "（高分警惕追涨）" if total >= 6.5 else ""
+        return f"进入候选（等待择时）{tag}".strip()
     return "暂不关注"
 
 

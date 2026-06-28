@@ -44,7 +44,7 @@ def _pattern_score(kline: pd.DataFrame) -> Dict:
     ret_20d = (last / close.iloc[-21] - 1) if len(close) >= 21 else 0.0
 
     trend = "走强" if ma5 > ma20 > ma60 else ("走弱" if ma5 < ma20 < ma60 else "中性")
-    dev = "超涨" if ret_20d > 0.20 else ("超跌" if ret_20d < -0.20 else "中性")
+    dev = "超涨" if ret_20d > config.PATTERN["overbought_20d"] else ("超跌" if ret_20d < config.PATTERN["oversold_20d"] else "中性")
 
     score = 0
     if trend == "走强":
