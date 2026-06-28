@@ -66,12 +66,11 @@ WEIGHT_LEAP_BOOST = 0.10
 USE_EQUAL_WEIGHTS = False
 
 # Tiebreaker 开关（A/B 验证用）
-# V1.2 A/B 实测（5 窗口 × top5 = 350 picks）：
-#   保留 tiebreaker（A）：整体 5 日 67.8% / 7.57%，A 独有 picks 63.3% / 3.66%
-#   移除 tiebreaker（B）：整体 5 日 66.4% / 7.32%，B 独有 picks 42.9% / -0.02%
-#   picks 重叠 94.3%——tiebreaker 把 G 量比单独推上的差 picks 替换为机构净买入
-#   picks，后者表现更好。保留。
-# 注：机构净买入桶整体平均 5.29% < 无机构 8.12%，是右侧尾薄所致，非 tiebreaker 反向。
+# V1.2 A/B（有 lookahead 框架）：保留 67.8% > 移除 66.4%，A 独有 63.3% > B 独有 42.9%
+# V1.7 A/B 重验（V1.5 修复框架）：保留 59.7% > 移除 58.7%，A 独有 60.0% > B 独有 37.1%
+# 两次结论一致：tiebreaker 把 G 量比单独推上的差 picks 替换为机构净买入 picks，
+# 后者表现更好。是真信号，非 lookahead 假象。保留。
+# 注：机构净买入桶整体平均低是右侧尾薄所致，非 tiebreaker 反向。
 TIEBREAKER_INST_ENABLED = True
 
 # 候选门槛与持仓数
