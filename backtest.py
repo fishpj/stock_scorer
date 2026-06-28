@@ -126,8 +126,13 @@ def spot_row_from_kline(code: str, kline_as_of: pd.DataFrame, name: str = "") ->
     })
 
 
-def forward_return(kline: pd.DataFrame, buy_date, hold: int) -> float | None:
-    """buy_date 收盘买入，buy_date+hold 收盘卖出，返回百分比收益。"""
+def forward_return(kline: pd.DataFrame, buy_date, hold: int,
+                   cost_pct: float = 0.15) -> float | None:
+    """buy_date 收盘买入，buy_date+hold 收盘卖出，返回百分比收益。
+
+    cost_pct: 双边交易成本（%），默认 0.15 = 佣金 ~0.05%×2 + 印花 0.05%。
+    V1.9 加成本后，回测收益更接近实盘。
+    """
     if kline is None or kline.empty:
         return None
     k = kline.copy()
@@ -135,7 +140,28 @@ def forward_return(kline: pd.DataFrame, buy_date, hold: int) -> float | None:
         return None
     k["日期"] = pd.to_datetime(k["日期"], errors="coerce")
     k = k.sort_values("日期").reset_index(drop=True)
-    # 找 ≥ buy_date 的第一行（买入日）
+    future = k[k["日期"] >= pd.Timestamp(buy_date)]
+    if future.empty or len(future) <= hold:
+        return None
+    buy_close = pd.to_numeric(future.iloc[0]["收盘"], errors="coerce")
+    sell_close = pd.to_numeric(future.iloc[hold]["收盘"], errors="coerce")
+    if pd.isna(buy_close) or pd.isna(sell_close) or buy_close <= 0:
+        return None
+    return (sell_close / buy_close - 1) * 100 - cost_pct
+
+
+def index_forward_return(kline: pd.DataFrame, buy_date, hold: int) -> float | None:
+    """指数 5 日前瞻收益（不扣成本，指数无交易成本）。
+
+    指数 K 线列名与个股一致（日期/收盘），复用相同逻辑。
+    """
+    if kline is None or kline.empty:
+        return None
+    k = kline.copy()
+    if "日期" not in k.columns:
+        return None
+    k["日期"] = pd.to_datetime(k["日期"], errors="coerce")
+    k = k.sort_values("日期").reset_index(drop=True)
     future = k[k["日期"] >= pd.Timestamp(buy_date)]
     if future.empty or len(future) <= hold:
         return None
@@ -315,6 +341,11 @@ def main():
     lhb_coverage = sum(1 for d in test_dates if lhb_sets_as_of(d)[0])
     print(f"  {lhb_coverage}/{len(test_dates)} 个测试日有 LHB 数据")
 
+    # 沪深300 指数 K 线（基准对比用）
+    step("拉沪深300 指数 K 线（基准用）…")
+    hs300_kline = data.get_index_kline("000300", days=200)
+    print(f"  沪深300 K 线 {len(hs300_kline)} 行")
+
     # 每日按当日市场环境切换权重
     regime_arg = args.regime
     use_daily_regime = (regime_arg == "auto")
@@ -322,6 +353,7 @@ def main():
     picks = []
     regime_counter = {}
     universe_sizes = []
+    bench_rows = []  # 每日基准：universe 等权 + 沪深300
     for di, d in enumerate(test_dates):
         if use_daily_regime:
             regime = detect_regime_as_of(klines, d)
@@ -358,6 +390,19 @@ def main():
                 "fwd_5d": forward_return(klines.get(r["代码"]), d, 5),
                 "fwd_10d": forward_return(klines.get(r["代码"]), d, 10),
             })
+
+        # 基准 1：universe 等权 5 日收益（与 picks 同期同成本）
+        uni_rets = [forward_return(klines.get(c), d, 5) for c, _ in codes_names_today]
+        uni_rets = [r for r in uni_rets if r is not None]
+        uni_eq_5d = sum(uni_rets) / len(uni_rets) if uni_rets else None
+        # 基准 2：沪深300 指数 5 日收益（不扣成本，指数无交易成本）
+        hs300_5d = index_forward_return(hs300_kline, d, 5)
+        bench_rows.append({
+            "date": d, "regime": regime,
+            "uni_eq_5d": round(uni_eq_5d, 2) if uni_eq_5d is not None else None,
+            "hs300_5d": round(hs300_5d, 2) if hs300_5d is not None else None,
+        })
+
         if (di + 1) % 10 == 0:
             done = [p for p in picks if p["date"] <= test_dates[di]]
             avg5 = pd.Series([p["fwd_5d"] for p in done if p["fwd_5d"] is not None]).mean()
@@ -390,6 +435,16 @@ def main():
     ).reset_index()
     daily["cum_avg"] = daily["avg_5d"].cumsum()
 
+    # 基准对比：picks 5 日 vs universe 等权 vs 沪深300
+    bench_df = pd.DataFrame(bench_rows)
+    if not bench_df.empty:
+        bench_df = bench_df.merge(
+            daily[["date", "avg_5d"]].rename(columns={"avg_5d": "picks_5d"}),
+            on="date", how="left",
+        )
+        bench_df["alpha_uni"] = bench_df["picks_5d"] - bench_df["uni_eq_5d"]
+        bench_df["alpha_hs300"] = bench_df["picks_5d"] - bench_df["hs300_5d"]
+
     out = Path(__file__).parent / args.out
     with pd.ExcelWriter(out, engine="openpyxl") as w:
         picks_df.to_excel(w, sheet_name="picks", index=False)
@@ -400,6 +455,8 @@ def main():
         stats_lhb.to_excel(w, sheet_name="stats_by_LHB", index=False)
         stats_inst.to_excel(w, sheet_name="stats_by_inst", index=False)
         daily.to_excel(w, sheet_name="daily", index=False)
+        if not bench_df.empty:
+            bench_df.to_excel(w, sheet_name="benchmark", index=False)
 
     # 终端汇总
     valid5 = picks_df["fwd_5d"].dropna()
@@ -409,6 +466,17 @@ def main():
     print(f"总 picks: {len(picks_df)} | 有效 5日 {len(valid5)} | 10日 {len(valid10)}")
     print(f"整体 5日胜率: {(valid5>0).mean()*100:.1f}% | 平均 {valid5.mean():.2f}%")
     print(f"整体 10日胜率: {(valid10>0).mean()*100:.1f}% | 平均 {valid10.mean():.2f}%")
+    if not bench_df.empty:
+        picks_avg = bench_df["picks_5d"].dropna().mean()
+        uni_avg = bench_df["uni_eq_5d"].dropna().mean()
+        hs300_avg = bench_df["hs300_5d"].dropna().mean()
+        alpha_uni = (bench_df["picks_5d"] - bench_df["uni_eq_5d"]).dropna().mean()
+        alpha_hs300 = (bench_df["picks_5d"] - bench_df["hs300_5d"]).dropna().mean()
+        print()
+        print("--- 基准对比（5 日平均）---")
+        print(f"  picks      {picks_avg:.2f}%")
+        print(f"  universe   {uni_avg:.2f}%   alpha {alpha_uni:+.2f}pp")
+        print(f"  沪深300    {hs300_avg:.2f}%   alpha {alpha_hs300:+.2f}pp")
     print()
     print("--- 按总分桶 ---")
     print(stats_score.to_string(index=False))

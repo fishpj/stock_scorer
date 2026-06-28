@@ -274,3 +274,31 @@ def get_recent_lockups(days_back: int = 5, days_forward: int = 30):
         return df.copy() if df is not None else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# 6. 指数日 K（沪深300/中证500 等，用作回测基准）
+# ---------------------------------------------------------------------------
+def get_index_kline(symbol: str = "000300", days: int = 120):
+    """指数日 K，symbol 如 '000300'（沪深300）/ '000905'（中证500）。
+
+    返回列：日期/开盘/收盘/最高/最低/成交量/成交额。
+    """
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+    key = f"idx_{symbol}_{days}d"
+    cached = _read_cache(key, 24)
+    if cached is not None:
+        return cached
+    try:
+        df = _ak().index_zh_a_hist(symbol=symbol, period="daily",
+                                   start_date=start, end_date=end)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        _write_cache(key, df)
+        return df
+    except Exception as e:
+        print(f"  [warn] 指数 {symbol} 拉取失败：{type(e).__name__}")
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
