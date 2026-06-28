@@ -150,6 +150,68 @@ def forward_return(kline: pd.DataFrame, buy_date, hold: int,
     return (sell_close / buy_close - 1) * 100 - cost_pct
 
 
+def forward_return_with_stop(kline: pd.DataFrame, buy_date, hold: int,
+                             cost_pct: float = 0.15):
+    """带止损的前瞻收益（V1.10）。
+
+    用日 K 的最低价近似触发：
+    - 触及 -7% (stop_loss_half)：半仓止损，剩 50% 持有到期
+    - 触及 -12% (stop_loss_full)：全仓止损
+    - 否则持有到 buy_date+hold 收盘卖出
+
+    保守假设：触发后用阈值价成交（实际可能跳空更差）。
+    半仓止损后剩余继续承担后续波动。
+
+    返回 (return_pct, exit_reason, exit_day) 或 (None, None, None)。
+    """
+    if kline is None or kline.empty:
+        return None, None, None
+    k = kline.copy()
+    if "日期" not in k.columns or "最低" not in k.columns:
+        return None, None, None
+    k["日期"] = pd.to_datetime(k["日期"], errors="coerce")
+    k = k.sort_values("日期").reset_index(drop=True)
+    future = k[k["日期"] >= pd.Timestamp(buy_date)]
+    if future.empty or len(future) <= hold:
+        return None, None, None
+    buy_close = pd.to_numeric(future.iloc[0]["收盘"], errors="coerce")
+    if pd.isna(buy_close) or buy_close <= 0:
+        return None, None, None
+
+    full_thresh = buy_close * (1 + config.RISK["stop_loss_full"])
+    half_thresh = buy_close * (1 + config.RISK["stop_loss_half"])
+
+    half_sold = False
+    half_sell_price = None
+    for i in range(1, hold + 1):
+        if i >= len(future):
+            break
+        low = pd.to_numeric(future.iloc[i]["最低"], errors="coerce")
+        if pd.isna(low):
+            continue
+        if low <= full_thresh:
+            if half_sold:
+                # 50% 已在 half_thresh 卖,剩 50% 在 full_thresh 卖
+                avg_sell = 0.5 * half_sell_price + 0.5 * full_thresh
+                ret = (avg_sell / buy_close - 1) * 100 - cost_pct
+                return ret, "半+全止损", i
+            ret = (full_thresh / buy_close - 1) * 100 - cost_pct
+            return ret, "全止损", i
+        if low <= half_thresh and not half_sold:
+            half_sold = True
+            half_sell_price = half_thresh
+
+    sell_close = pd.to_numeric(future.iloc[hold]["收盘"], errors="coerce")
+    if pd.isna(sell_close):
+        return None, None, None
+    if half_sold:
+        avg_sell = 0.5 * half_sell_price + 0.5 * sell_close
+        ret = (avg_sell / buy_close - 1) * 100 - cost_pct
+        return ret, "半止损到期", hold
+    ret = (sell_close / buy_close - 1) * 100 - cost_pct
+    return ret, "到期", hold
+
+
 def index_forward_return(kline: pd.DataFrame, buy_date, hold: int) -> float | None:
     """指数 5 日前瞻收益（不扣成本，指数无交易成本）。
 
@@ -257,22 +319,24 @@ def bucket_Z3(note):
     return "中性"
 
 
-def aggregate(picks: pd.DataFrame, col: str, bucket_fn) -> pd.DataFrame:
-    """按 col 桶聚合：样本数、5日胜率、5日平均、10日胜率、10日平均。"""
-    df = picks.copy()
+def aggregate(picks: pd.DataFrame, col: str, bucket_fn,
+              ret_col: str = "fwd_5d") -> pd.DataFrame:
+    """按 col 桶聚合：样本数、5日胜率、5日平均、10日胜率、10日平均。
+
+    ret_col 可指定为 fwd_5d_stop（用于止损桶统计，看真实止损后收益）。
+    """
+    df = picks.dropna(subset=[ret_col]).copy()
     df["_bucket"] = df[col].apply(bucket_fn)
     rows = []
     for b, g in df.groupby("_bucket"):
         rows.append({
             "桶": b,
             "样本": len(g),
-            "5日胜率%": round((g["fwd_5d"] > 0).mean() * 100, 1) if g["fwd_5d"].notna().any() else None,
-            "5日平均%": round(g["fwd_5d"].mean(), 2) if g["fwd_5d"].notna().any() else None,
+            "5日胜率%": round((g[ret_col] > 0).mean() * 100, 1) if g[ret_col].notna().any() else None,
+            "5日平均%": round(g[ret_col].mean(), 2) if g[ret_col].notna().any() else None,
             "10日胜率%": round((g["fwd_10d"] > 0).mean() * 100, 1) if g["fwd_10d"].notna().any() else None,
             "10日平均%": round(g["fwd_10d"].mean(), 2) if g["fwd_10d"].notna().any() else None,
         })
-    # 排序
-    order_map = {}
     return pd.DataFrame(rows).sort_values("5日平均%", ascending=False).reset_index(drop=True)
 
 
@@ -378,17 +442,29 @@ def main():
         df, _ = scorer.score_all(signals_list, regime)
         top = df.head(args.top)
         for _, r in top.iterrows():
+            code = r["代码"]
+            k = klines.get(code)
+            fwd5_nostop = forward_return(k, d, 5)
+            fwd5_stop, exit_reason, exit_day = forward_return_with_stop(k, d, 5)
             picks.append({
                 "date": d,
                 "regime": regime,
-                "代码": r["代码"], "名称": r["名称"],
+                "代码": code, "名称": r["名称"],
                 "总分": r["总分"], "K_盈亏比": r.get("K_盈亏比"),
                 "Z3_note": r.get("Z3_note", ""),
                 "Z4_note": r.get("Z4_note", ""),
                 "机构净买入_亿": r.get("机构净买入_亿"),
                 "建议": r.get("建议", ""),
-                "fwd_5d": forward_return(klines.get(r["代码"]), d, 5),
-                "fwd_10d": forward_return(klines.get(r["代码"]), d, 10),
+                # fwd_5d 用无止损版本（V1.10 A/B 验证：5/5 窗口止损降低收益
+                # 平均 -0.94pp / -4.8pp 胜率，5 日短持有期止损 net negative。
+                # 原因：A 股日内 -7% 低点常反弹，止损卖在低点；触发后无时间回本。
+                # fwd_5d_stop 保留作对比列，供后续阈值实验用。）
+                "fwd_5d": fwd5_nostop,
+                "fwd_5d_stop": fwd5_stop,
+                "fwd_5d_nostop": fwd5_nostop,
+                "fwd_10d": forward_return(k, d, 10),
+                "exit_reason": exit_reason or "",
+                "exit_day": exit_day,
             })
 
         # 基准 1：universe 等权 5 日收益（与 picks 同期同成本）
@@ -425,6 +501,8 @@ def main():
                           lambda r: "有LHB" if "龙虎榜" in str(r) else "无LHB")
     stats_inst = aggregate(picks_df, "机构净买入_亿",
                            lambda r: "机构净买入" if pd.notna(r) and r > 0 else "无机构")
+    stats_exit = aggregate(picks_df, "exit_reason", lambda r: r or "未触发",
+                           ret_col="fwd_5d_stop")
 
     # 每日组合：top-K 等权 5 日收益
     daily = picks_df.dropna(subset=["fwd_5d"]).groupby("date").agg(
@@ -454,6 +532,7 @@ def main():
         stats_regime.to_excel(w, sheet_name="stats_by_regime", index=False)
         stats_lhb.to_excel(w, sheet_name="stats_by_LHB", index=False)
         stats_inst.to_excel(w, sheet_name="stats_by_inst", index=False)
+        stats_exit.to_excel(w, sheet_name="stats_by_exit", index=False)
         daily.to_excel(w, sheet_name="daily", index=False)
         if not bench_df.empty:
             bench_df.to_excel(w, sheet_name="benchmark", index=False)
@@ -466,6 +545,28 @@ def main():
     print(f"总 picks: {len(picks_df)} | 有效 5日 {len(valid5)} | 10日 {len(valid10)}")
     print(f"整体 5日胜率: {(valid5>0).mean()*100:.1f}% | 平均 {valid5.mean():.2f}%")
     print(f"整体 10日胜率: {(valid10>0).mean()*100:.1f}% | 平均 {valid10.mean():.2f}%")
+
+    # 止损 A/B 对比
+    if "fwd_5d_stop" in picks_df.columns:
+        both = picks_df.dropna(subset=["fwd_5d_stop", "fwd_5d_nostop"])
+        if not both.empty:
+            stop_avg = both["fwd_5d_stop"].mean()
+            nostop_avg = both["fwd_5d_nostop"].mean()
+            stop_win = (both["fwd_5d_stop"] > 0).mean() * 100
+            nostop_win = (both["fwd_5d_nostop"] > 0).mean() * 100
+            print()
+            print("--- 止损 A/B 对比（5 日）---")
+            print(f"  无止损  胜率 {nostop_win:.1f}% | 平均 {nostop_avg:.2f}%")
+            print(f"  有止损  胜率 {stop_win:.1f}% | 平均 {stop_avg:.2f}%")
+            print(f"  delta   {stop_win - nostop_win:+.1f}pp / {stop_avg - nostop_avg:+.2f}pp")
+            exit_counts = both["exit_reason"].value_counts()
+            total = len(both)
+            print(f"  止损触发率: 全止损 {exit_counts.get('全止损', 0)} "
+                  f"({exit_counts.get('全止损', 0)/total*100:.1f}%) | "
+                  f"半止损 {exit_counts.get('半止损到期', 0)} "
+                  f"({exit_counts.get('半止损到期', 0)/total*100:.1f}%) | "
+                  f"到期 {exit_counts.get('到期', 0)} "
+                  f"({exit_counts.get('到期', 0)/total*100:.1f}%)")
     if not bench_df.empty:
         picks_avg = bench_df["picks_5d"].dropna().mean()
         uni_avg = bench_df["uni_eq_5d"].dropna().mean()
@@ -492,6 +593,9 @@ def main():
     print()
     print("--- 按机构净买入 ---")
     print(stats_inst.to_string(index=False))
+    print()
+    print("--- 按止损触发 ---")
+    print(stats_exit.to_string(index=False))
     print()
     print(f"✓ 已输出：{out}")
     return 0
