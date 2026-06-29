@@ -1,19 +1,12 @@
 # 修改记录
-# 修改内容: Git 忽略规则，剔除 cache/、temp/、xlsx 产物及 IDE/系统文件
-# 修改日期: 2026-06-28
+# 修改内容: Git 忽略规则，剔除 cache/、exports/、results/、xlsx 产物及 IDE/系统文件
+# 修改日期: 2026-06-29
 # 作者: fishpj
 
 # 数据缓存与生成产物
 cache/
-temp/
-v11_results/
-v12_results/
-v13_results/
-v14_equal/
-v15_results/
-v16_v10scoring/
-v17_no_tiebreak/
-v18_k_narrow/
+exports/
+results/
 *.xlsx
 *.log
 
