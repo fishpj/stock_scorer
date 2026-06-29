@@ -1,6 +1,6 @@
 # 修改记录
-# 修改内容: 加权打分，六大依据按权重矩阵合成总分，支持市场环境切换与强度跃迁临时加权
-# 修改日期: 2026-06-28
+# 修改内容: _regime_adjust_z3 改超涨分级扣分（≥50% 扣 2，≥30% 扣 1），钳制放宽到 [-2,2] 让负值穿透
+# 修改日期: 2026-06-29
 # 作者: fishpj
 """加权打分（方案第三步）：六大依据按权重矩阵合成总分。
 
@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 from typing import List, Dict
+import re
 import pandas as pd
 
 import config
@@ -59,14 +60,18 @@ def leap_boost(signals_list: List[Dict]) -> Dict[str, float]:
 
 
 def _regime_adjust_z3(z3_raw: int, note: str, regime: str) -> int:
-    """根据 Z3_note（含趋势/偏离）按市场环境重打分。
+    """根据 Z3_note（含趋势/偏离/20日涨幅）按市场环境重打分。
 
     note 形如："趋势 走强, 偏离 超涨, 20日 89.1%"
-    桶验证显示 bull 下超涨样本占 70% 但 5 日仅 6.73%，原规则
-    "走强+超涨=2" 把分堆到追涨顶端。收紧为：
-    - bull：走强且非超涨=2，走强+超涨=1，超涨单独=0
-    - bear：超跌=2（反转），走弱=1（筑底），走强=0，超涨=-1
-    - neutral：走强=1，超跌=1，超涨=0，其它=0
+    V1.12 改动：超涨分级扣分（所有 regime 一致语义），修复 V1.11 倒挂
+    （≥6.5 高分池 5 日 60.6%/5.95% 反不如 5.5-6.5 池 69.6%/8.62%。
+    根因是 bull 下"走强+超涨=1"变相奖励超涨，且 bear 下超涨=-1
+    被钳制 max(0,...) 抹掉）。新规则：
+    - 超涨且 20日 ≥ 50% → -2（重超涨）
+    - 超涨且 20日 ≥ 30% → -1（普通超涨）
+    - bull：走强且非超涨=2，超跌=1，其它=0
+    - bear：超跌=2（反转），走弱=1（筑底），走强=0，超涨按上表扣
+    - neutral：走强=1，超跌=1，超涨按上表扣，其它=0
     """
     trend = "走强" if "趋势 走强" in note else ("走弱" if "趋势 走弱" in note else "")
     dev = ""
@@ -75,14 +80,29 @@ def _regime_adjust_z3(z3_raw: int, note: str, regime: str) -> int:
             dev = d
             break
 
+    # 解析 20 日涨幅（百分数 → 小数）
+    ret_20d = None
+    m = re.search(r"20日\s+([-\d.]+)%", note)
+    if m:
+        try:
+            ret_20d = float(m.group(1)) / 100.0
+        except ValueError:
+            ret_20d = None
+
+    # 超涨分级扣分（所有 regime 一致）
+    overbought_penalty = 0
+    if dev == "超涨":
+        if ret_20d is not None and ret_20d >= config.PATTERN["overbought_penalty_heavy"]:
+            overbought_penalty = -2
+        else:
+            overbought_penalty = -1
+
     if regime == "bull":
         if trend == "走强" and dev != "超涨":
             return 2
-        if trend == "走强" and dev == "超涨":
-            return 1
         if dev == "超跌":
             return 1
-        return 0
+        return overbought_penalty
     if regime == "bear":
         if dev == "超跌":
             return 2
@@ -90,15 +110,13 @@ def _regime_adjust_z3(z3_raw: int, note: str, regime: str) -> int:
             return 1
         if trend == "走强":
             return 0
-        if dev == "超涨":
-            return -1
-        return 0
+        return overbought_penalty
     # neutral
-    if trend == "走强":
+    if trend == "走强" and dev != "超涨":
         return 1
     if dev == "超跌":
         return 1
-    return 0
+    return overbought_penalty
 
 
 def score_all(signals_list: List[Dict], regime: str) -> pd.DataFrame:
@@ -120,7 +138,7 @@ def score_all(signals_list: List[Dict], regime: str) -> pd.DataFrame:
         z2 = s.get(Z_KEYS[1], 0)
         z3_raw = s.get(Z_KEYS[2], 0)
         z3 = _regime_adjust_z3(z3_raw, str(s.get("Z3_note", "")), regime)
-        z3 = max(0, min(2, z3))  # 钳到 [0, 2]
+        z3 = max(-2, min(2, z3))  # V1.12: 钳到 [-2, 2]，让超涨负分穿透到加权求和
         z4 = s.get(Z_KEYS[3], 0)
         z5 = s.get(Z_KEYS[4], 0)
         z6 = s.get(Z_KEYS[5], 0)
