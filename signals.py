@@ -1,6 +1,6 @@
 # 修改记录
-# 修改内容: 信号提取，G/Z/K/S 四变量与六大依据子项打分（0~2），供 scorer 合成总分
-# 修改日期: 2026-06-28
+# 修改内容: compute_signals 输出加 Z3_ret_20d 数值字段，供 scorer 直传避免字符串往返解析
+# 修改日期: 2026-06-30
 # 作者: fishpj
 """信号提取（方案第二步）：G/Z/K/S 四变量 + 六大判断依据打分。
 
@@ -229,6 +229,7 @@ def compute_signals(
         "Z2_note": peer_note + (f" (PE={pe:.1f} PB={pb:.1f})" if pd.notna(pe) and pd.notna(pb) else ""),
         "Z3_形态": z3,
         "Z3_note": f"趋势 {pat['trend']}, 偏离 {pat['deviation']}, 20日 {pat['ret_20d']*100 if pat['ret_20d'] else 0:.1f}%",
+        "Z3_ret_20d": pat["ret_20d"],  # 数值字段，供 scorer 直传（V1.12 小补丁）
         "Z4_市场关注度": z4,
         "Z4_note": " / ".join(g_signals) if g_signals else "—",
         "Z5_最大可卖量": z5,

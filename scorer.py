@@ -1,6 +1,6 @@
 # 修改记录
-# 修改内容: _regime_adjust_z3 改超涨分级扣分（≥50% 扣 2，≥30% 扣 1），钳制放宽到 [-2,2] 让负值穿透
-# 修改日期: 2026-06-29
+# 修改内容: _regime_adjust_z3 改用 Z3_ret_20d 数值直传（移除正则解析）；_advice 注释同步 V1.12 后格局
+# 修改日期: 2026-06-30
 # 作者: fishpj
 """加权打分（方案第三步）：六大依据按权重矩阵合成总分。
 
@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 from typing import List, Dict
-import re
 import pandas as pd
 
 import config
@@ -59,19 +58,21 @@ def leap_boost(signals_list: List[Dict]) -> Dict[str, float]:
     return leap
 
 
-def _regime_adjust_z3(z3_raw: int, note: str, regime: str) -> int:
-    """根据 Z3_note（含趋势/偏离/20日涨幅）按市场环境重打分。
+def _regime_adjust_z3(z3_raw: int, ret_20d, note: str, regime: str) -> int:
+    """根据 Z3_note（趋势/偏离）+ ret_20d（20日涨幅小数）按市场环境重打分。
 
-    note 形如："趋势 走强, 偏离 超涨, 20日 89.1%"
     V1.12 改动：超涨分级扣分（所有 regime 一致语义），修复 V1.11 倒挂
     （≥6.5 高分池 5 日 60.6%/5.95% 反不如 5.5-6.5 池 69.6%/8.62%。
     根因是 bull 下"走强+超涨=1"变相奖励超涨，且 bear 下超涨=-1
     被钳制 max(0,...) 抹掉）。新规则：
     - 超涨且 20日 ≥ 50% → -2（重超涨）
-    - 超涨且 20日 ≥ 30% → -1（普通超涨）
+    - 超涨且 30% ≤ 20日 < 50% → -1（普通超涨）
     - bull：走强且非超涨=2，超跌=1，其它=0
     - bear：超跌=2（反转），走弱=1（筑底），走强=0，超涨按上表扣
     - neutral：走强=1，超跌=1，超涨按上表扣，其它=0
+
+    ret_20d 由 signals.compute_signals 直传（Z3_ret_20d 字段），
+    避免从 Z3_note 字符串反向解析的隐式耦合。
     """
     trend = "走强" if "趋势 走强" in note else ("走弱" if "趋势 走弱" in note else "")
     dev = ""
@@ -80,22 +81,13 @@ def _regime_adjust_z3(z3_raw: int, note: str, regime: str) -> int:
             dev = d
             break
 
-    # 解析 20 日涨幅（百分数 → 小数）
-    ret_20d = None
-    m = re.search(r"20日\s+([-\d.]+)%", note)
-    if m:
-        try:
-            ret_20d = float(m.group(1)) / 100.0
-        except ValueError:
-            ret_20d = None
-
     # 超涨分级扣分（所有 regime 一致）
     overbought_penalty = 0
     if dev == "超涨":
         if ret_20d is not None and ret_20d >= config.PATTERN["overbought_penalty_heavy"]:
             overbought_penalty = -2
         else:
-            overbought_penalty = -1
+            overbought_penalty = -1  # 0.30 ≤ ret_20d < 0.50
 
     if regime == "bull":
         if trend == "走强" and dev != "超涨":
@@ -137,7 +129,7 @@ def score_all(signals_list: List[Dict], regime: str) -> pd.DataFrame:
         z1 = s.get(Z_KEYS[0], 0)
         z2 = s.get(Z_KEYS[1], 0)
         z3_raw = s.get(Z_KEYS[2], 0)
-        z3 = _regime_adjust_z3(z3_raw, str(s.get("Z3_note", "")), regime)
+        z3 = _regime_adjust_z3(z3_raw, s.get("Z3_ret_20d"), str(s.get("Z3_note", "")), regime)
         z3 = max(-2, min(2, z3))  # V1.12: 钳到 [-2, 2]，让超涨负分穿透到加权求和
         z4 = s.get(Z_KEYS[3], 0)
         z5 = s.get(Z_KEYS[4], 0)
@@ -193,7 +185,9 @@ def score_all(signals_list: List[Dict], regime: str) -> pd.DataFrame:
 
 
 def _advice(total: float, s: Dict) -> str:
-    # 桶验证显示 5.5-6.0 系统性最优，门槛 5.5；≥6.5 反而追涨风险，标注警惕
+    # V1.12 修复倒挂后 ≥6.5 池 5 日 61.2% > 5.5-6.5 池 55.0%（单调性恢复）。
+    # 门槛 5.5 落在 V1.1 桶验证最优区间下界；≥6.5 保留"警惕追涨"标签作风控约束
+    # （高分池样本量大、绝对收益仍高于门槛，但单票波动大）。
     if total >= config.SCORE_THRESHOLD and s.get("timing_ok"):
         tag = "（高分警惕追涨）" if total >= 6.5 else ""
         return f"可建仓（择时已满足）{tag}".strip()
